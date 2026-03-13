@@ -1,4 +1,4 @@
-iimport streamlit as st
+import streamlit as st
 import random
 import json
 import gspread
@@ -221,4 +221,5 @@ if st.session_state.answered:
             udata = get_new_batch(udata)
             save_progress(all_data)
             st.session_state.answered = False
+
             st.rerun()
