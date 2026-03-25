@@ -3,15 +3,21 @@ import random
 import json
 import gspread
 from google.oauth2.service_account import Credentials
-from questions_data import raw_data
+from questions_data import raw_data as data1           # 載入第一科
+from questions_data_2 import raw_data_2 as data2       # 載入第二科
 
 st.set_page_config(page_title="AI 應用企劃師刷題神器", page_icon="🚀")
 
-# ================= 1. Google Sheets 資料庫邏輯 =================
+# ================= 0. 考試科目設定 =================
+# 在這裡定義你的考試科目名稱與對應的題庫
+SUBJECTS = {
+    "📘 AI 應用企劃師 (345題)": data1,
+    "📗 AI 應用企劃師_第一科 (530題)": data2
+}
 
+# ================= 1. Google Sheets 資料庫邏輯 =================
 @st.cache_resource
 def get_gsheet_client():
-    """設定並連線至 Google Sheets"""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -23,7 +29,6 @@ def get_gsheet_client():
     return gspread.authorize(creds)
 
 def load_progress():
-    """從 Google Sheets 讀取進度"""
     try:
         client = get_gsheet_client()
         sheet = client.open("QuizProgress").sheet1
@@ -32,26 +37,23 @@ def load_progress():
             return json.loads(val)
         return {}
     except Exception as e:
-        # 【關鍵修復 1：加上安全鎖】如果讀取失敗，立刻暫停，絕對不回傳空資料洗掉進度！
         st.error("⚠️ 無法連線至 Google 雲端！請檢查網路連線。為保護您的進度，系統已暫停運作。請重新整理網頁。")
         st.stop()
 
 def save_progress(data):
-    """將進度存回 Google Sheets"""
     try:
         client = get_gsheet_client()
         sheet = client.open("QuizProgress").sheet1
         sheet.update_acell('A1', json.dumps(data, ensure_ascii=False))
     except Exception as e:
-        # 【關鍵修復 2】存檔失敗時不中斷作答，只跳出輕量提示
         st.toast("⚠️ 雲端存檔稍微延遲，但進度已暫存在本機。")
 
-def init_user_data(username, data):
-    """初始化新使用者的進度"""
-    if username not in data:
-        all_indices = list(range(len(raw_data)))
+# 【關鍵修改】初始化資料時，把題庫總數當作參數傳入
+def init_user_data(user_key, data, total_q):
+    if user_key not in data:
+        all_indices = list(range(total_q))
         random.shuffle(all_indices)
-        data[username] = {
+        data[user_key] = {
             "unseen": all_indices,
             "wrong_pool": [],
             "current_batch": [],
@@ -62,7 +64,6 @@ def init_user_data(username, data):
     return data
 
 def get_new_batch(user_data):
-    """從題庫抽出新的 50 題"""
     batch_size = 50
     draw_count = min(batch_size, len(user_data["unseen"]))
     user_data["current_batch"] = user_data["unseen"][:draw_count]
@@ -73,7 +74,7 @@ def get_new_batch(user_data):
 
 # ================= 2. 登入介面 (身分選擇) =================
 if 'current_user' not in st.session_state:
-    st.title("👋 歡迎來到 AI 刷題系統")
+    st.title("👋 歡迎來到專屬刷題系統")
     st.write("請選擇你的專屬身分，系統將為你讀取學習進度：")
     
     col1, col2 = st.columns(2)
@@ -90,51 +91,66 @@ if 'current_user' not in st.session_state:
 # ================= 3. 主系統邏輯 =================
 user = st.session_state.current_user
 
-# 【關鍵修復 3：大幅提速】只在剛登入時去 Google 下載一次資料，之後都存在網頁記憶體！
+# 下載雲端資料
 if 'cloud_data' not in st.session_state:
     with st.spinner("☁️ 正在從雲端同步你的學習進度，請稍候..."):
         st.session_state.cloud_data = load_progress()
 
-# 確保當前身分有被初始化
-st.session_state.cloud_data = init_user_data(user, st.session_state.cloud_data)
-
-# 綁定記憶體中的資料
 all_data = st.session_state.cloud_data
-udata = all_data[user]
 
-# 側邊欄：強制重新洗牌與身分切換
+# 側邊欄：加入科目選擇
 with st.sidebar:
     st.write(f"👤 目前使用者：**{user}**")
+    
+    # 【關鍵修改】讓使用者選擇科目
+    selected_subject = st.selectbox("📚 選擇考試科目：", list(SUBJECTS.keys()))
+    current_raw_data = SUBJECTS[selected_subject]
+    
+    # 組合出專屬的 Key，例如 "614_📘 AI 應用企劃師 (345題)"
+    user_key = f"{user}_{selected_subject}"
+    
+    # 如果偵測到切換科目，清空畫面作答狀態並重整
+    if st.session_state.get('last_subject') != selected_subject:
+        st.session_state.last_subject = selected_subject
+        st.session_state.pop('answered', None)
+        st.rerun()
+
+    st.divider()
     if st.button("🚪 登出 / 切換身分"):
         del st.session_state.current_user
         st.rerun()
     
     st.divider()
     st.write("⚠️ 危險操作區")
-    if st.button("🔄 題庫全面重新洗牌"):
-        all_indices = list(range(len(raw_data)))
+    if st.button(f"🔄 重置【{selected_subject}】進度"):
+        all_indices = list(range(len(current_raw_data)))
         random.shuffle(all_indices)
-        udata["unseen"] = all_indices
-        udata["wrong_pool"] = []
-        udata["current_batch"] = []
-        udata["batch_index"] = 0
-        udata["score"] = 0
+        all_data[user_key]["unseen"] = all_indices
+        all_data[user_key]["wrong_pool"] = []
+        all_data[user_key]["current_batch"] = []
+        all_data[user_key]["batch_index"] = 0
+        all_data[user_key]["score"] = 0
         save_progress(all_data)
         st.session_state.pop('answered', None)
         st.rerun()
+
+# 確保當前身分+科目有被初始化
+all_data = init_user_data(user_key, all_data, len(current_raw_data))
+udata = all_data[user_key]
 
 # 如果本回合沒題目了，且還有剩餘題庫，就抽新題目
 if len(udata["current_batch"]) == 0 and len(udata["unseen"]) > 0:
     udata = get_new_batch(udata)
     save_progress(all_data)
 
-st.title("🚀 AI 應用企劃師 刷題神器")
+st.title("🚀 專屬刷題神器")
+st.subheader(selected_subject)
 st.divider()
 
 # ================= 4. 題庫耗盡的結算畫面 =================
 if len(udata["current_batch"]) == 0 and len(udata["unseen"]) == 0:
     st.balloons()
-    st.success("🏆 恭喜你！你已經把目前題庫裡所有的題目都刷過至少一輪了！")
+    st.success(f"🏆 恭喜你！你已經把【{selected_subject}】所有的題目都刷過至少一輪了！")
     st.write(f"📝 你的「錯題本」裡面目前累積了 **{len(udata['wrong_pool'])}** 道不熟悉的題目。")
     
     col1, col2 = st.columns(2)
@@ -153,7 +169,7 @@ if len(udata["current_batch"]) == 0 and len(udata["unseen"]) == 0:
             
     with col2:
         if st.button("🔄 將所有題目重新洗牌重刷", use_container_width=True):
-            all_indices = list(range(len(raw_data)))
+            all_indices = list(range(len(current_raw_data)))
             random.shuffle(all_indices)
             udata["unseen"] = all_indices
             udata["wrong_pool"] = []
@@ -167,7 +183,7 @@ if len(udata["current_batch"]) == 0 and len(udata["unseen"]) == 0:
 batch_total = len(udata["current_batch"])
 current_q_idx = udata["batch_index"]
 real_q_index = udata["current_batch"][current_q_idx]
-q_data = raw_data[real_q_index]
+q_data = current_raw_data[real_q_index]
 
 st.caption(f"📦 總題庫剩餘：{len(udata['unseen'])} 題 ｜ 📓 錯題本累積：{len(udata['wrong_pool'])} 題")
 st.caption(f"🏃 本回合進度：第 {current_q_idx + 1} / {batch_total} 題 ｜ 🎯 得分：{udata['score']}")
